@@ -4,24 +4,55 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"os"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+
+	"github.com/JoaoVitorFerreiro/rinha-backend-2025/internal/application"
+	"github.com/JoaoVitorFerreiro/rinha-backend-2025/internal/infra/circuit"
+	"github.com/JoaoVitorFerreiro/rinha-backend-2025/internal/infra/client"
+	httpHandler "github.com/JoaoVitorFerreiro/rinha-backend-2025/internal/infra/http"
+	"github.com/JoaoVitorFerreiro/rinha-backend-2025/internal/infra/memory"
 )
 
-func main(){
+func main() {
 	e := echo.New()
+	e.HideBanner = true
 
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 
-	e.GET("/", healthCheck)
+	e.Server.ReadTimeout = 5 * time.Second
+	e.Server.WriteTimeout = 5 * time.Second
+	e.Server.IdleTimeout = 60 * time.Second
 
-	 if err := e.Start(":8080"); err != nil && !errors.Is(err, http.ErrServerClosed) {
-    slog.Error("failed to start server", "error", err)
-  }
-}
+	metricsStore := memory.NewMetricsStore()
+	circuitBreaker := circuit.NewCircuitBreaker()
+	processorClient := client.NewProcessorClient()
 
-func healthCheck(c echo.Context) error {
-	return c.String(http.StatusOK, "Status API: OK")
+	paymentService := application.NewPaymentService(
+		processorClient,
+		metricsStore,
+		circuitBreaker,
+	)
+
+	paymentHandler := httpHandler.NewPaymentHandler(paymentService)
+
+	e.POST("/payments", paymentHandler.ProcessPayment)
+	e.GET("/payments-summary", paymentHandler.GetSummary)
+
+	e.GET("/health", paymentHandler.HealthCheck)
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "9999"
+	}
+
+	slog.Info("Starting Rinha Backend 2025 server", "port", port)
+
+	if err := e.Start(":" + port); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		slog.Error("failed to start server", "error", err)
+	}
 }
