@@ -20,11 +20,11 @@ type MetricsStore struct {
 	fallbackRequests int64
 	fallbackAmount   int64
 
-	redisClient *redis.Client
-	payments    []PaymentRecord
-	mu          sync.RWMutex
+	redisClient  *redis.Client
+	payments     []PaymentRecord
+	recordBuffer chan PaymentRecord
+	mu           sync.RWMutex
 }
-
 type PaymentRecord struct {
 	ProcessorType application.ProcessorType `json:"processorType"`
 	Amount        int64                     `json:"amount"`
@@ -54,6 +54,7 @@ func NewMetricsStore() *MetricsStore {
 	store := &MetricsStore{
 		redisClient: rdb,
 		payments:    make([]PaymentRecord, 0, 100000),
+		recordBuffer: make(chan PaymentRecord, 10000),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -66,20 +67,30 @@ func NewMetricsStore() *MetricsStore {
 	}
 
 	go store.loadFromRedis()
+	go store.batchProcessor()
 	return store
 }
 
 func (m *MetricsStore) IncrementDefault(amount int64) {
-	atomic.AddInt64(&m.defaultRequests, 1)
-	atomic.AddInt64(&m.defaultAmount, amount)
+    atomic.AddInt64(&m.defaultRequests, 1)
+    atomic.AddInt64(&m.defaultAmount, amount)
+    
+    // Async sem blocking
+    go func() {
+        record := PaymentRecord{
+            ProcessorType: application.ProcessorDefault,
+            Amount:        amount,
+            ProcessedAt:   time.Now().UTC(),
+        }
+        m.addPaymentRecordAsync(record)
+    }()
+}
 
-	record := PaymentRecord{
-		ProcessorType: application.ProcessorDefault,
-		Amount:        amount,
-		ProcessedAt:   time.Now().UTC(),
-	}
-
-	m.addPaymentRecord(record)
+func (m *MetricsStore) addPaymentRecordAsync(record PaymentRecord) {
+    select {
+    case m.recordBuffer <- record:
+    default:
+    }
 }
 
 func (m *MetricsStore) IncrementFallback(amount int64) {
@@ -206,5 +217,37 @@ func (m *MetricsStore) loadFromRedis() {
 				m.mu.Unlock()
 			}
 		}
+	}
+}
+
+func (m *MetricsStore) batchProcessor() {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	batch := make([]PaymentRecord, 0, 1000)
+	
+	for {
+		select {
+		case record := <-m.recordBuffer:
+			batch = append(batch, record)
+			if len(batch) >= 1000 {
+				m.processBatch(batch)
+				batch = batch[:0]
+			}
+		case <-ticker.C:
+			if len(batch) > 0 {
+				m.processBatch(batch)
+				batch = batch[:0]
+			}
+		}
+	}
+}
+
+func (m *MetricsStore) processBatch(batch []PaymentRecord) {
+	m.mu.Lock()
+	m.payments = append(m.payments, batch...)
+	m.mu.Unlock()
+	
+	// Persist batch to Redis
+	for _, record := range batch {
+		go m.persistToRedis(record)
 	}
 }

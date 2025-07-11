@@ -4,7 +4,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -45,10 +44,7 @@ func main() {
 
 	e.GET("/health", paymentHandler.HealthCheck)
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "9999"
-	}
+	port := "8080"
 
 	slog.Info("Starting Rinha Backend 2025 server", "port", port)
 

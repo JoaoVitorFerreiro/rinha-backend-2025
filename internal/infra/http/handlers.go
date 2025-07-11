@@ -11,7 +11,7 @@ import (
 )
 
 type PaymentHandler struct {
-	paymentService *application.PaymentService
+    paymentService *application.PaymentService 
 }
 
 func NewPaymentHandler(service *application.PaymentService) *PaymentHandler {
@@ -21,17 +21,31 @@ func NewPaymentHandler(service *application.PaymentService) *PaymentHandler {
 }
 
 func (h *PaymentHandler) ProcessPayment(c echo.Context) error {
-	var payment domain.Payment
+    var req struct {
+        CorrelationID string  `json:"correlationId"`
+        Amount        float64 `json:"amount"`
+    }
 
-	if err := c.Bind(&payment); err != nil {
-		return c.NoContent(http.StatusBadRequest)
-	}
+    if err := c.Bind(&req); err != nil {
+        return c.JSON(400, map[string]string{"error": "Invalid JSON"})
+    }
 
-	if err := h.paymentService.ProcessPayment(c.Request().Context(), &payment); err != nil {
-		return c.NoContent(http.StatusBadRequest)
-	}
+    if len(req.CorrelationID) != 36 || req.Amount <= 0 {
+        return c.JSON(400, map[string]string{"error": "Invalid input"})
+    }
 
-	return c.NoContent(http.StatusAccepted)
+    payment := domain.Payment{
+        CorrelationID: req.CorrelationID,
+        Amount:        int64(req.Amount * 100),
+        Timestamp:     time.Now().UTC(),
+    }
+
+    result, err := h.paymentService.ProcessPayment(c.Request().Context(), &payment)
+    if err != nil {
+        return c.JSON(500, map[string]string{"error": err.Error()})
+    }
+    
+    return c.JSON(200, result)
 }
 
 func (h *PaymentHandler) GetSummary(c echo.Context) error {

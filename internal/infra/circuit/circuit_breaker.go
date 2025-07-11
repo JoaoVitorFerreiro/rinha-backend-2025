@@ -22,13 +22,14 @@ func NewCircuitBreaker() *CircuitBreaker {
 }
 
 func (cb *CircuitBreaker) IsOpen() bool {
-	cb.mu.RLock()
-	defer cb.mu.RUnlock()
-
-	if atomic.LoadInt64(&cb.failures) >= cb.threshold {
-		return time.Since(cb.lastFailure) < cb.timeout
-	}
-	return false
+    failures := atomic.LoadInt64(&cb.failures)
+    if failures >= cb.threshold {
+        cb.mu.RLock()
+        lastFailure := cb.lastFailure
+        cb.mu.RUnlock()
+        return time.Since(lastFailure) < cb.timeout
+    }
+    return false
 }
 
 func (cb *CircuitBreaker) RecordSuccess() {

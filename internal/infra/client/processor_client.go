@@ -35,19 +35,19 @@ func NewProcessorClient() *ProcessorClient {
 	}
 
 	client := &ProcessorClient{
-		httpClient: &http.Client{
-			Timeout: 8 * time.Second,
-			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 10,
-				IdleConnTimeout:     90 * time.Second,
-			},
-		},
-		defaultURL:  defaultURL,
-		fallbackURL: fallbackURL,
-		healthCache: make(map[application.ProcessorType]*application.HealthStatus),
+        httpClient: &http.Client{
+            Timeout: 5 * time.Second, 
+            Transport: &http.Transport{
+                MaxIdleConns:        200,  
+                MaxIdleConnsPerHost: 50,   
+                IdleConnTimeout:     30 * time.Second, 
+                DisableKeepAlives:   false,
+                MaxConnsPerHost:     100,  
+                WriteBufferSize:     32 * 1024,
+                ReadBufferSize:      32 * 1024,
+            },
+        },
 	}
-
 	// Inicia health checker
 	go client.healthChecker()
 

@@ -2,14 +2,12 @@ package domain
 
 import (
 	"time"
-
-	"github.com/google/uuid"
 )
 
 type Payment struct {
 	CorrelationID string `json:"correlationId" validate:"required,uuid"`
 	Amount int64 `json:"amount" validate:"required"` 
-	RequestedAt time.Time `json:"requestedAt,omitempty"`
+	Timestamp     time.Time `json:"timestamp,omitempty"`
 }
 
 type ProcessorPayment struct {
@@ -22,31 +20,27 @@ func NewPayment(correlationID string, amount int64) *Payment {
 	return &Payment{
 		CorrelationID: correlationID,
 		Amount:        amount,
-		RequestedAt:   time.Now().UTC(),
+		Timestamp:   time.Now().UTC(),
 	}
 }
 
 func (p *Payment) Validate() error {
-	if p.CorrelationID == "" {
-		return ErrInvalidCorrelationID
-	}
+    if len(p.CorrelationID) != 36 {
+        return ErrInvalidCorrelationID
+    }
+    
+    if p.Amount <= 0 {
+        return ErrInvalidAmount
+    }
 
-	if _, err := uuid.Parse(p.CorrelationID); err != nil {
-		return ErrInvalidCorrelationID
-	}
-
-	if p.Amount <= 0 {
-		return ErrInvalidAmount
-	}
-
-	return nil
+    return nil
 }
 
 func (p *Payment) ToProcessorPayload() ProcessorPayment {
 	return ProcessorPayment{
 		CorrelationID: p.CorrelationID,
 		Amount:        p.Amount,
-		RequestedAt:   p.RequestedAt.Format(time.RFC3339),
+		RequestedAt:   p.Timestamp.Format(time.RFC3339),
 	}
 }
 

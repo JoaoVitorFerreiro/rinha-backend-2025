@@ -14,7 +14,6 @@ type PaymentService struct {
 	paymentQueue    chan *domain.Payment
 }
 
-// Interfaces que a infra implementa
 type ProcessorClient interface {
 	SendPayment(ctx context.Context, payment domain.ProcessorPayment, processorType ProcessorType) error
 	GetHealth(ctx context.Context, processorType ProcessorType) (*HealthStatus, error)
@@ -55,35 +54,63 @@ type ProcessorSummary struct {
 }
 
 func NewPaymentService(client ProcessorClient, metrics MetricsStore, breaker CircuitBreaker) *PaymentService {
-	service := &PaymentService{
-		processorClient: client,
-		metricsStore:    metrics,
-		circuitBreaker:  breaker,
-		paymentQueue:    make(chan *domain.Payment, 10000),
-	}
+    service := &PaymentService{
+        processorClient: client,
+        metricsStore:    metrics,
+        circuitBreaker:  breaker,
+        paymentQueue:    make(chan *domain.Payment, 50000),
+    }
 
-	// Inicia workers
-	for i := 0; i < 10; i++ {
-		go service.paymentWorker()
-	}
+    numWorkers := 50 
+    for i := 0; i < numWorkers; i++ {
+        go service.paymentWorker()
+    }
 
-	return service
+    return service
 }
 
-func (s *PaymentService) ProcessPayment(ctx context.Context, payment *domain.Payment) error {
-	if err := payment.Validate(); err != nil {
-		return err
-	}
+func (s *PaymentService) ProcessPayment(ctx context.Context, payment *domain.Payment) (interface{}, error) {
+    if err := payment.Validate(); err != nil {
+        return nil, err
+    }
 
-	select {
-	case s.paymentQueue <- payment:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-		return domain.NewPaymentError("payment queue is full")
-	}
+    select {
+    case s.paymentQueue <- payment:
+        return map[string]string{"status": "accepted"}, nil
+    case <-ctx.Done():
+        return nil, ctx.Err()
+    default:
+        return nil, domain.NewPaymentError("payment queue is full")
+    }
 }
+
+func (s *PaymentService) processPaymentSync(payment *domain.Payment) {
+    ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second) // Reduzir timeout
+    defer cancel()
+
+    processorType := s.chooseProcessor(ctx)
+    processorPayment := payment.ToProcessorPayload()
+
+    err := s.processorClient.SendPayment(ctx, processorPayment, processorType)
+
+    if err != nil {
+        if processorType == ProcessorDefault {
+            s.circuitBreaker.RecordFailure()
+            if fallbackErr := s.processorClient.SendPayment(ctx, processorPayment, ProcessorFallback); fallbackErr == nil {
+                s.metricsStore.IncrementFallback(payment.Amount)
+            }
+        }
+        return
+    }
+
+    if processorType == ProcessorDefault {
+        s.circuitBreaker.RecordSuccess()
+        s.metricsStore.IncrementDefault(payment.Amount)
+    } else {
+        s.metricsStore.IncrementFallback(payment.Amount)
+    }
+}
+
 
 func (s *PaymentService) GetSummary(ctx context.Context, from, to *time.Time) PaymentSummary {
 	return s.metricsStore.GetSummary(from, to)
@@ -95,33 +122,6 @@ func (s *PaymentService) paymentWorker() {
 	}
 }
 
-func (s *PaymentService) processPaymentSync(payment *domain.Payment) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	processorType := s.chooseProcessor(ctx)
-	processorPayment := payment.ToProcessorPayload()
-
-	err := s.processorClient.SendPayment(ctx, processorPayment, processorType)
-
-	if err != nil {
-		if processorType == ProcessorDefault {
-			s.circuitBreaker.RecordFailure()
-			fallbackErr := s.processorClient.SendPayment(ctx, processorPayment, ProcessorFallback)
-			if fallbackErr == nil {
-				s.metricsStore.IncrementFallback(payment.Amount)
-			}
-		}
-		return
-	}
-
-	if processorType == ProcessorDefault {
-		s.circuitBreaker.RecordSuccess()
-		s.metricsStore.IncrementDefault(payment.Amount)
-	} else {
-		s.metricsStore.IncrementFallback(payment.Amount)
-	}
-}
 
 func (s *PaymentService) chooseProcessor(ctx context.Context) ProcessorType {
 	if s.circuitBreaker.IsOpen() {
